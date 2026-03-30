@@ -7,39 +7,30 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from cce.dependencies import get_settings
+from cce.dependencies import get_memory_manager, get_settings
 
 logger = logging.getLogger(__name__)
 _start_time = time.time()
 
-# Module-level handle so routes can access the queue after startup
-_compression_queue = None
-
-
-def get_compression_queue():
-    return _compression_queue
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _compression_queue
-
     settings = get_settings()
-
-    # Lazy imports to keep startup fast when deps aren't all wired yet
-    from cce.compression.compressor import Compressor
-    from cce.compression.queue import CompressionQueue
-
-    # Placeholder memory stores — Phase 4 wires real per-project instances.
-    # For now, compressor is constructed but the queue runs idle until
-    # the memory manager is initialized per request.
-    _compression_queue = None  # will be set once MemoryManager is ready (Phase 4)
-
     logger.info("Context Compression Engine starting on %s:%d", settings.host, settings.port)
+
+    # Pre-load the memory manager (creates data dir, etc.)
+    get_memory_manager()
 
     yield
 
-    logger.info("Context Compression Engine shutting down")
+    # Shutdown: stop all per-project compression workers and close DBs
+    manager = get_memory_manager()
+    for project_id in await manager.project_ids():
+        mem = await manager.get(project_id)
+        await mem.queue.stop()
+
+    await manager.close_all()
+    logger.info("Context Compression Engine shut down cleanly")
 
 
 def create_app() -> FastAPI:

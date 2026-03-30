@@ -7,7 +7,7 @@ def test_health_returns_ok(client):
     assert body["uptime_seconds"] >= 0
 
 
-def test_compress_passthrough(client):
+def test_compress_returns_structured_prompt(client):
     r = client.post("/compress", json={
         "project_hint": "/tmp/fake-project",
         "current_message": "What does this function do?",
@@ -16,15 +16,15 @@ def test_compress_passthrough(client):
     })
     assert r.status_code == 200
     body = r.json()
-    assert body["optimized_prompt"] == "What does this function do?"
-    assert body["compression_ratio"] == 1.0
-    assert "pipeline not yet wired" in body["warnings"][0]
+    assert "What does this function do?" in body["optimized_prompt"]
+    assert "CONTEXT BRIEFING" in body["optimized_prompt"]
+    assert body["warnings"] == []
 
 
-def test_recall_stub(client):
+def test_recall_returns_briefing(client):
     r = client.post("/recall", json={
         "project_hint": "/tmp/fake-project",
         "max_tokens": 1024,
     })
     assert r.status_code == 200
-    assert "not yet loaded" in r.json()["briefing"]
+    assert "CONTEXT BRIEFING" in r.json()["briefing"]
