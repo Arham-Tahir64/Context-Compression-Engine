@@ -42,7 +42,10 @@ def create_app() -> FastAPI:
     )
 
     from cce.api.routes import router
+    from cce.api.errors import CCEError, cce_error_handler, generic_error_handler
     app.include_router(router)
+    app.add_exception_handler(CCEError, cce_error_handler)
+    app.add_exception_handler(Exception, generic_error_handler)
 
     return app
 

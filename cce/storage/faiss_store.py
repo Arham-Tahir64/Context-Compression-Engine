@@ -29,6 +29,23 @@ class FaissStore:
         else:
             self._index = faiss.IndexFlatIP(self._dimension)
 
+    def verify_integrity(self, expected_count: int) -> tuple[bool, str]:
+        """Check FAISS ntotal matches SQLite record count.
+
+        Returns (ok, message). Called at project init to catch corruption
+        from a previous unclean shutdown.
+        """
+        if self._index is None:
+            return False, "Index not loaded"
+        actual = self._index.ntotal
+        if actual != expected_count:
+            return False, (
+                f"FAISS index has {actual} vectors but SQLite has "
+                f"{expected_count} ltm_records — index may be stale. "
+                f"Run the re-index script to rebuild."
+            )
+        return True, "ok"
+
     def unload(self) -> None:
         self._index = None
 

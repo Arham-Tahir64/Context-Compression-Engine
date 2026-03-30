@@ -197,9 +197,9 @@ Weights exposed in `Settings`. Default decay rate: 0.15.
 | Phase | What | Status |
 |---|---|---|
 | 0 | Foundation: models, settings, embeddings, storage, FastAPI skeleton | ✅ Done |
-| 1 | Chunker + Scorer | 🔄 Next |
-| 2 | Memory tiers (STM, WM, LTM) + Router | Pending |
-| 3 | Async compression (queue + LM Studio compressor) | Pending |
-| 4 | Prompt assembler + wire API endpoints | Pending |
-| 5 | Project identity resolver + hardening | Pending |
-| 6 | Integration testing + latency benchmarks | Pending |
+| 1 | Chunker + Scorer | ✅ Done |
+| 2 | Memory tiers (STM, WM, LTM) + Router + Identity resolver | ✅ Done |
+| 3 | Async compression (queue + LM Studio compressor) | ✅ Done |
+| 4 | Prompt assembler + wire API endpoints | ✅ Done |
+| 5 | FAISS integrity check, error handling, .gitignore, bench script | ✅ Done |
+| 6 | Integration testing + latency benchmarks | 🔄 Next |

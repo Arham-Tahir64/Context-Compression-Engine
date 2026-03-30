@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import NamedTuple
 
@@ -15,6 +16,8 @@ from cce.pipeline.router import MemoryRouter
 from cce.settings import Settings
 from cce.storage.db import Database
 from cce.storage.faiss_store import FaissStore
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectMemory(NamedTuple):
@@ -86,6 +89,15 @@ class MemoryManager:
 
         faiss = FaissStore(s.faiss_index_path(project_id), self._embedding_provider.dimension)
         faiss.load()
+
+        # Integrity check: warn if FAISS and SQLite counts diverge
+        ltm_count_row = await db.fetchone(
+            "SELECT COUNT(*) FROM ltm_records WHERE project_id = ?", (project_id,)
+        )
+        ltm_count = ltm_count_row[0] if ltm_count_row else 0
+        ok, msg = faiss.verify_integrity(ltm_count)
+        if not ok:
+            logger.warning("FAISS integrity check failed for project %s: %s", project_id, msg)
 
         stm = ShortTermMemory(max_turns=s.stm_max_turns)
         wm = WorkingMemory(db, project_id, max_records=s.wm_max_records)

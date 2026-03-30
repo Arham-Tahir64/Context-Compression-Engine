@@ -13,6 +13,7 @@ from cce.api.schemas import (
     ClearMemoryResponse,
     LatencyBreakdown, MemoryHits, MemorySources,
 )
+from cce.api.errors import EmbeddingError, ProjectInitError
 from cce.dependencies import SettingsDep, get_assembler, get_embedding_provider, get_memory_manager
 from cce.identity.resolver import resolve_project_id
 from cce.pipeline.assembler import _GENERIC_RECALL_QUERY
@@ -47,13 +48,25 @@ async def compress(request: CompressRequest, settings: SettingsDep):
     project_id = resolve_project_id(request.project_hint)
 
     # Get per-project memory stack
-    manager = get_memory_manager()
-    mem = await manager.get(project_id)
+    try:
+        manager = get_memory_manager()
+        mem = await manager.get(project_id)
+    except Exception as exc:
+        raise ProjectInitError(f"Failed to initialise project {project_id}: {exc}") from exc
 
     # Embed the current message for scoring and retrieval
     embedding_provider = get_embedding_provider()
+    # True original size = all incoming context turns + current message
+    from cce.pipeline.chunker import estimate_tokens as _est
+    raw_original_tokens = _est(request.current_message) + sum(
+        _est(t.content) for t in request.recent_context
+    )
+
     t_retrieval_start = time.time()
-    query_embedding = await embedding_provider.embed_one(request.current_message)
+    try:
+        query_embedding = await embedding_provider.embed_one(request.current_message)
+    except Exception as exc:
+        raise EmbeddingError(f"Embedding failed: {exc}") from exc
 
     # Chunk and score incoming context, then route to memory tiers
     if request.recent_context:
@@ -111,6 +124,7 @@ async def compress(request: CompressRequest, settings: SettingsDep):
         query_embedding=query_embedding,
         current_message=request.current_message,
         max_context_tokens=request.metadata.max_context_tokens,
+        original_token_count=raw_original_tokens,
     )
     t_assembly_ms = (time.time() - t_assembly_start) * 1000
     t_total_ms = (time.time() - t_start) * 1000
@@ -138,12 +152,18 @@ async def recall(request: RecallRequest, settings: SettingsDep):
     request_id = str(uuid.uuid4())
 
     project_id = resolve_project_id(request.project_hint)
-    manager = get_memory_manager()
-    mem = await manager.get(project_id)
+    try:
+        manager = get_memory_manager()
+        mem = await manager.get(project_id)
+    except Exception as exc:
+        raise ProjectInitError(f"Failed to initialise project {project_id}: {exc}") from exc
 
     embedding_provider = get_embedding_provider()
     query_text = request.query or _GENERIC_RECALL_QUERY
-    query_embedding = await embedding_provider.embed_one(query_text)
+    try:
+        query_embedding = await embedding_provider.embed_one(query_text)
+    except Exception as exc:
+        raise EmbeddingError(f"Embedding failed: {exc}") from exc
 
     assembler = get_assembler()
     briefing = await assembler.recall(

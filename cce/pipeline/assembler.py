@@ -42,6 +42,7 @@ class PromptAssembler:
         current_message: str,
         max_context_tokens: int | None = None,
         top_k: int = 20,
+        original_token_count: int | None = None,
     ) -> PromptPackage:
         budget = max_context_tokens or self._settings.default_max_context_tokens
         budget = int(budget / self._settings.token_count_padding_factor)
@@ -77,7 +78,10 @@ class PromptAssembler:
             else:
                 selected_ltm.append(record)
 
-        original_tokens = estimate_tokens(current_message) + stm_tokens
+        # Use the caller-supplied raw size when available; fall back to
+        # current_message + STM for requests with no prior context.
+        original_tokens = original_token_count if original_token_count is not None \
+            else estimate_tokens(current_message) + stm_tokens
         compressed_tokens = (
             sum(estimate_tokens(r.content) for r in selected_wm)
             + sum(estimate_tokens(r.content) for r in selected_ltm)
