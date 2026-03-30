@@ -68,7 +68,7 @@ async def router(tmp_path):
     wm = WorkingMemory(db, "proj", max_records=settings.wm_max_records)
     ltm = LongTermMemory(db, faiss, "proj", max_records=settings.ltm_max_records)
 
-    yield MemoryRouter(stm, wm, ltm, settings)
+    yield MemoryRouter(stm, wm, ltm, settings, db=db)
     await db.close()
 
 
@@ -126,3 +126,15 @@ async def test_router_sets_importance_score_on_chunk(router):
     sc = _scored_chunk(score=0.77)
     await router.route([sc])
     assert sc.chunk.importance_score == pytest.approx(0.77)
+
+
+@pytest.mark.asyncio
+async def test_router_logs_chunks_to_database(router):
+    sc = _scored_chunk(score=0.65, content="remember this chunk")
+    result = await router.route([sc])
+    assert result.wm == 1
+
+    row = await router._db.fetchone("SELECT content, tier_assigned FROM chunks WHERE chunk_id = ?", (sc.chunk.chunk_id,))
+    assert row is not None
+    assert row["content"] == "remember this chunk"
+    assert row["tier_assigned"] == "wm"

@@ -15,7 +15,14 @@ _DIMENSION = 384
 def _load_model():
     # Deferred import so the process starts fast; model loads once and is cached.
     from sentence_transformers import SentenceTransformer
-    return SentenceTransformer(_MODEL_NAME)
+    try:
+        return SentenceTransformer(_MODEL_NAME, local_files_only=True)
+    except Exception as exc:
+        raise RuntimeError(
+            "Embedding model 'all-MiniLM-L6-v2' is not available locally. "
+            "Download it once in a connected environment or switch to a different "
+            "embedding provider before starting the server."
+        ) from exc
 
 
 class SentenceTransformerProvider(EmbeddingProvider):
@@ -45,6 +52,14 @@ class SentenceTransformerProvider(EmbeddingProvider):
     async def embed_one(self, text: str) -> list[float]:
         results = await self.embed([text])
         return results[0]
+
+    async def check_ready(self) -> tuple[bool, str | None]:
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, _load_model)
+        except Exception as exc:
+            return False, str(exc)
+        return True, None
 
     def _encode_sync(self, texts: list[str]) -> np.ndarray:
         model = _load_model()

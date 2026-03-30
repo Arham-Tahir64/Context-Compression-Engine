@@ -27,12 +27,17 @@ async def health(settings: SettingsDep):
     from cce.compression.compressor import Compressor
     compressor = Compressor(settings, None, None)  # type: ignore[arg-type]
     lm_reachable = await compressor.probe()
+    embedding_provider = get_embedding_provider()
+    embedding_ready, embedding_error = await embedding_provider.check_ready()
     manager = get_memory_manager()
 
     return HealthResponse(
         status="ok",
         version="0.1.0",
         lm_studio_reachable=lm_reachable,
+        embedding_ready=embedding_ready,
+        embedding_model=embedding_provider.model_name,
+        embedding_error=embedding_error,
         projects_loaded=len(await manager.project_ids()),
         uptime_seconds=round(time.time() - _START_TIME, 1),
     )
@@ -56,6 +61,10 @@ async def compress(request: CompressRequest, settings: SettingsDep):
 
     # Embed the current message for scoring and retrieval
     embedding_provider = get_embedding_provider()
+    embedding_ready, embedding_error = await embedding_provider.check_ready()
+    if not embedding_ready:
+        raise EmbeddingError(embedding_error or "Embedding provider is not ready.")
+
     # True original size = all incoming context turns + current message
     from cce.pipeline.chunker import estimate_tokens as _est
     raw_original_tokens = _est(request.current_message) + sum(
@@ -96,10 +105,11 @@ async def compress(request: CompressRequest, settings: SettingsDep):
         current_turn = max((t.turn_index for t in turns), default=0)
         scored = scorer.score(chunks, query_embedding, request.current_message, current_turn)
 
-        await mem.router.route(scored)
+        routing = await mem.router.route(scored)
 
         # Enqueue compression jobs for WM/LTM chunks (async, off critical path)
         from cce.models.types import CompressionJob, CompressionLevel, MemoryTier
+        queued_jobs = 0
         for sc in scored:
             if sc.composite_score >= settings.router_wm_threshold and \
                sc.composite_score < settings.router_stm_threshold:
@@ -109,8 +119,33 @@ async def compress(request: CompressRequest, settings: SettingsDep):
                     chunks=[sc.chunk],
                     target_tier=MemoryTier.WM,
                     compression_level=CompressionLevel.LIGHT,
+                    target_record_id=routing.record_ids_by_chunk_id.get(sc.chunk.chunk_id),
                 )
                 await mem.queue.enqueue(job)
+                queued_jobs += 1
+            elif sc.composite_score >= settings.router_discard_threshold and \
+                    sc.composite_score < settings.router_wm_threshold:
+                job = CompressionJob(
+                    job_id=str(uuid.uuid4()),
+                    project_id=project_id,
+                    chunks=[sc.chunk],
+                    target_tier=MemoryTier.LTM,
+                    compression_level=CompressionLevel.HEAVY,
+                    target_record_id=routing.record_ids_by_chunk_id.get(sc.chunk.chunk_id),
+                )
+                await mem.queue.enqueue(job)
+                queued_jobs += 1
+
+        if queued_jobs:
+            warnings.append(
+                "Compression is deferred; this response may still contain raw working/long-term memory "
+                "until the background worker catches up."
+            )
+            if not await mem.queue.compressor_available():
+                warnings.append(
+                    "LM Studio is unreachable; queued compression will fall back to extractive truncation "
+                    "until it recovers."
+                )
 
     t_retrieval_ms = (time.time() - t_retrieval_start) * 1000
 
@@ -159,6 +194,10 @@ async def recall(request: RecallRequest, settings: SettingsDep):
         raise ProjectInitError(f"Failed to initialise project {project_id}: {exc}") from exc
 
     embedding_provider = get_embedding_provider()
+    embedding_ready, embedding_error = await embedding_provider.check_ready()
+    if not embedding_ready:
+        raise EmbeddingError(embedding_error or "Embedding provider is not ready.")
+
     query_text = request.query or _GENERIC_RECALL_QUERY
     try:
         query_embedding = await embedding_provider.embed_one(query_text)
@@ -201,15 +240,28 @@ async def project_stats(project_id: str, settings: SettingsDep):
     stm_count = await mem.stm.count()
     wm_count = await mem.wm.count()
     ltm_count = await mem.ltm.count()
+    total_token_estimate = (
+        await mem.stm.token_estimate()
+        + await mem.wm.token_estimate()
+        + await mem.ltm.token_estimate()
+    )
+    oldest_candidates = [
+        await mem.stm.oldest_record_timestamp(),
+        await mem.wm.oldest_record_timestamp(),
+        await mem.ltm.oldest_record_timestamp(),
+    ]
+    oldest_record_ts = min(ts for ts in oldest_candidates if ts is not None) if any(
+        ts is not None for ts in oldest_candidates
+    ) else None
 
     return ProjectStatsResponse(
         project_id=project_id,
         stm_records=stm_count,
         wm_records=wm_count,
         ltm_records=ltm_count,
-        total_token_estimate=0,
-        faiss_index_size=ltm_count,
-        oldest_record_ts=None,
+        total_token_estimate=total_token_estimate,
+        faiss_index_size=mem.ltm.faiss_index_size,
+        oldest_record_ts=oldest_record_ts,
     )
 
 

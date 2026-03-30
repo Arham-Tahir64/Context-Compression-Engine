@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import NamedTuple
+from dataclasses import dataclass
 
 from cce.compression.compressor import Compressor
 from cce.compression.queue import CompressionQueue
@@ -11,7 +11,6 @@ from cce.embeddings.base import EmbeddingProvider
 from cce.memory.ltm import LongTermMemory
 from cce.memory.stm import ShortTermMemory
 from cce.memory.wm import WorkingMemory
-from cce.models.types import CompressionJob, CompressionLevel, MemoryTier
 from cce.pipeline.router import MemoryRouter
 from cce.settings import Settings
 from cce.storage.db import Database
@@ -20,12 +19,14 @@ from cce.storage.faiss_store import FaissStore
 logger = logging.getLogger(__name__)
 
 
-class ProjectMemory(NamedTuple):
+@dataclass
+class ProjectMemory:
     stm: ShortTermMemory
     wm: WorkingMemory
     ltm: LongTermMemory
     router: MemoryRouter
     queue: CompressionQueue
+    worker_task: asyncio.Task[None] | None = None
 
 
 class MemoryManager:
@@ -48,7 +49,19 @@ class MemoryManager:
             async with self._lock:
                 if project_id not in self._projects:
                     await self._init_project(project_id)
+        else:
+            self._ensure_worker(project_id)
         return self._projects[project_id]
+
+    async def shutdown(self) -> None:
+        for mem in self._projects.values():
+            await mem.queue.stop()
+
+        tasks = [mem.worker_task for mem in self._projects.values() if mem.worker_task is not None]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        await self.close_all()
 
     async def close_all(self) -> None:
         for db in self._dbs.values():
@@ -102,10 +115,41 @@ class MemoryManager:
         stm = ShortTermMemory(max_turns=s.stm_max_turns)
         wm = WorkingMemory(db, project_id, max_records=s.wm_max_records)
         ltm = LongTermMemory(db, faiss, project_id, max_records=s.ltm_max_records)
-        router = MemoryRouter(stm, wm, ltm, s)
+        router = MemoryRouter(stm, wm, ltm, s, db=db)
         compressor = Compressor(s, wm, ltm)
         queue = CompressionQueue(compressor, maxsize=s.compression_queue_maxsize)
 
         self._projects[project_id] = ProjectMemory(
             stm=stm, wm=wm, ltm=ltm, router=router, queue=queue
         )
+        self._ensure_worker(project_id)
+
+    def _ensure_worker(self, project_id: str) -> None:
+        mem = self._projects[project_id]
+        if mem.worker_task is not None and not mem.worker_task.done():
+            return
+
+        task = asyncio.create_task(
+            mem.queue.drain_worker(),
+            name=f"cce-compression-worker-{project_id}",
+        )
+        task.add_done_callback(lambda t, pid=project_id: self._on_worker_done(pid, t))
+        mem.worker_task = task
+
+    def _on_worker_done(self, project_id: str, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+
+        try:
+            exc = task.exception()
+        except Exception:
+            logger.exception("Failed to inspect compression worker state for project %s", project_id)
+            return
+
+        if exc is not None:
+            logger.warning(
+                "Compression worker for project %s stopped unexpectedly: %s. "
+                "It will be restarted on the next request.",
+                project_id,
+                exc,
+            )

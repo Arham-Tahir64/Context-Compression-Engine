@@ -25,11 +25,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown: stop all per-project compression workers and close DBs
     manager = get_memory_manager()
-    for project_id in await manager.project_ids():
-        mem = await manager.get(project_id)
-        await mem.queue.stop()
-
-    await manager.close_all()
+    await manager.shutdown()
     logger.info("Context Compression Engine shut down cleanly")
 
 

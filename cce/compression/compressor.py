@@ -69,7 +69,7 @@ class Compressor:
         )
 
         record = MemoryRecord(
-            record_id=str(uuid.uuid4()),
+            record_id=job.target_record_id or str(uuid.uuid4()),
             project_id=job.project_id,
             content=compressed_text,
             original_token_count=original_tokens,

@@ -54,3 +54,11 @@ class ShortTermMemory(MemoryStore):
 
     async def count(self) -> int:
         return len(self._buffer)
+
+    async def token_estimate(self) -> int:
+        return sum(record.compressed_token_count for record in self._buffer)
+
+    async def oldest_record_timestamp(self) -> float | None:
+        if not self._buffer:
+            return None
+        return min(record.created_at for record in self._buffer)

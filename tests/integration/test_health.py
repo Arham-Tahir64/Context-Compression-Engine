@@ -4,6 +4,8 @@ def test_health_returns_ok(client):
     body = r.json()
     assert body["status"] == "ok"
     assert body["version"] == "0.1.0"
+    assert body["embedding_ready"] is True
+    assert body["embedding_model"] == "fake-all-MiniLM-L6-v2"
     assert body["uptime_seconds"] >= 0
 
 

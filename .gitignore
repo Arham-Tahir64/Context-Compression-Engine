@@ -19,6 +19,7 @@ env/
 
 # CCE local data (per-project memory stores)
 ~/.cce/
+.cce-data/
 
 # Test artifacts
 .pytest_cache/

@@ -29,24 +29,63 @@ class LongTermMemory(MemoryStore):
         self._max_records = max_records
 
     async def write(self, record: MemoryRecord) -> None:
-        # Assign a FAISS integer ID by adding the vector
-        faiss_ids = self._faiss.add([record.embedding])
-        faiss_id = faiss_ids[0]
+        existing = await self._db.fetchone(
+            "SELECT faiss_id FROM ltm_records WHERE project_id = ? AND record_id = ?",
+            (self._project_id, record.record_id),
+        )
+
+        if existing is None:
+            current = await self.count()
+            if current >= self._max_records:
+                await self._evict_lowest(1)
+
+            faiss_ids = self._faiss.add([record.embedding])
+            faiss_id = faiss_ids[0]
+
+            async with self._db.transaction():
+                await self._db.execute(
+                    """
+                    INSERT INTO ltm_records (
+                        record_id, project_id, faiss_id, content,
+                        original_token_count, compressed_token_count,
+                        source_chunk_ids, importance_score,
+                        created_at, last_accessed_at, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.record_id,
+                        self._project_id,
+                        faiss_id,
+                        record.content,
+                        record.original_token_count,
+                        record.compressed_token_count,
+                        encode_json(record.source_chunk_ids),
+                        record.importance_score,
+                        record.created_at,
+                        record.last_accessed_at,
+                        encode_json(record.metadata),
+                    ),
+                )
+
+            # Persist FAISS index atomically after every new vector write
+            self._faiss.save()
+            return
 
         async with self._db.transaction():
             await self._db.execute(
                 """
-                INSERT INTO ltm_records (
-                    record_id, project_id, faiss_id, content,
-                    original_token_count, compressed_token_count,
-                    source_chunk_ids, importance_score,
-                    created_at, last_accessed_at, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                UPDATE ltm_records
+                SET content = ?,
+                    original_token_count = ?,
+                    compressed_token_count = ?,
+                    source_chunk_ids = ?,
+                    importance_score = ?,
+                    created_at = ?,
+                    last_accessed_at = ?,
+                    metadata = ?
+                WHERE project_id = ? AND record_id = ?
                 """,
                 (
-                    record.record_id,
-                    self._project_id,
-                    faiss_id,
                     record.content,
                     record.original_token_count,
                     record.compressed_token_count,
@@ -55,11 +94,10 @@ class LongTermMemory(MemoryStore):
                     record.created_at,
                     record.last_accessed_at,
                     encode_json(record.metadata),
+                    self._project_id,
+                    record.record_id,
                 ),
             )
-
-        # Persist FAISS index atomically after every write
-        self._faiss.save()
 
     async def query(
         self,
@@ -107,6 +145,9 @@ class LongTermMemory(MemoryStore):
         if current <= self._max_records:
             return 0
         excess = current - self._max_records
+        return await self._evict_lowest(excess)
+
+    async def _evict_lowest(self, n: int) -> int:
         rows = await self._db.fetchall(
             """
             SELECT record_id FROM ltm_records
@@ -146,6 +187,24 @@ class LongTermMemory(MemoryStore):
             (self._project_id,),
         )
         return row[0] if row else 0
+
+    async def token_estimate(self) -> int:
+        row = await self._db.fetchone(
+            "SELECT COALESCE(SUM(compressed_token_count), 0) FROM ltm_records WHERE project_id = ?",
+            (self._project_id,),
+        )
+        return int(row[0]) if row else 0
+
+    async def oldest_record_timestamp(self) -> float | None:
+        row = await self._db.fetchone(
+            "SELECT MIN(created_at) FROM ltm_records WHERE project_id = ?",
+            (self._project_id,),
+        )
+        return float(row[0]) if row and row[0] is not None else None
+
+    @property
+    def faiss_index_size(self) -> int:
+        return self._faiss.ntotal
 
     # ------------------------------------------------------------------
 

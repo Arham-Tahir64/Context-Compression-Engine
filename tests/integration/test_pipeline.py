@@ -1,7 +1,7 @@
 """End-to-end integration tests for the /compress and /recall endpoints."""
 from __future__ import annotations
 
-from unittest.mock import patch
+from cce.compression.compressor import Compressor
 
 
 def test_compress_returns_real_project_id(client):
@@ -37,6 +37,7 @@ def test_compress_with_context_routes_to_memory(client):
     body = r.json()
     assert body["original_token_estimate"] > 0
     assert body["latency_ms"]["total_ms"] > 0
+    assert body["warnings"]
 
 
 def test_recall_returns_briefing(client):
@@ -63,6 +64,28 @@ def test_project_stats_returns_counts(client):
     body = r.json()
     assert "stm_records" in body
     assert "wm_records" in body
+    assert body["total_token_estimate"] >= 0
+
+
+def test_compress_warns_when_lm_studio_is_unreachable(client, monkeypatch):
+    async def fake_probe(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Compressor, "probe", fake_probe)
+
+    import os
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    r = client.post("/compress", json={
+        "project_hint": project_root,
+        "current_message": "Summarize the latest auth work",
+        "recent_context": [
+            {"role": "user", "content": "Touched auth.py and session.py", "turn_index": 0},
+        ],
+        "metadata": {"tool": "test", "max_context_tokens": 4096},
+    })
+    assert r.status_code == 200
+    warnings = r.json()["warnings"]
+    assert any("LM Studio is unreachable" in warning for warning in warnings)
 
 
 def test_compress_latency_under_threshold(client):

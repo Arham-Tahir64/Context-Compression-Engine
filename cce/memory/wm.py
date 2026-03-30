@@ -25,8 +25,12 @@ class WorkingMemory(MemoryStore):
         self._max_records = max_records
 
     async def write(self, record: MemoryRecord) -> None:
+        existing = await self._db.fetchone(
+            "SELECT record_id FROM wm_records WHERE project_id = ? AND record_id = ?",
+            (self._project_id, record.record_id),
+        )
         current = await self.count()
-        if current >= self._max_records:
+        if existing is None and current >= self._max_records:
             await self._evict_lowest()
 
         async with self._db.transaction():
@@ -120,6 +124,20 @@ class WorkingMemory(MemoryStore):
             (self._project_id,),
         )
         return row[0] if row else 0
+
+    async def token_estimate(self) -> int:
+        row = await self._db.fetchone(
+            "SELECT COALESCE(SUM(compressed_token_count), 0) FROM wm_records WHERE project_id = ?",
+            (self._project_id,),
+        )
+        return int(row[0]) if row else 0
+
+    async def oldest_record_timestamp(self) -> float | None:
+        row = await self._db.fetchone(
+            "SELECT MIN(created_at) FROM wm_records WHERE project_id = ?",
+            (self._project_id,),
+        )
+        return float(row[0]) if row and row[0] is not None else None
 
     # ------------------------------------------------------------------
 

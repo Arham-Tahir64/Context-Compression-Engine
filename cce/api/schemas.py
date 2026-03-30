@@ -83,6 +83,9 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     lm_studio_reachable: bool
+    embedding_ready: bool = True
+    embedding_model: str = "unknown"
+    embedding_error: str | None = None
     projects_loaded: int
     uptime_seconds: float
 

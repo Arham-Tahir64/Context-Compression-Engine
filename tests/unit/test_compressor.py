@@ -11,7 +11,7 @@ import pytest
 
 from cce.compression.compressor import Compressor
 from cce.compression.queue import CompressionQueue
-from cce.models.types import Chunk, ChunkType, CompressionJob, CompressionLevel, MemoryTier
+from cce.models.types import Chunk, ChunkType, CompressionJob, CompressionLevel, MemoryRecord, MemoryTier
 from cce.settings import Settings
 from cce.storage.db import Database
 from cce.storage.faiss_store import FaissStore
@@ -49,6 +49,27 @@ def _job(level: CompressionLevel = CompressionLevel.LIGHT, tier: MemoryTier = Me
         chunks=[_chunk("def calculate(x): return x * 2")],
         target_tier=tier,
         compression_level=level,
+    )
+
+
+def _memory_record(
+    *,
+    tier: MemoryTier,
+    content: str,
+    embedding: list[float] | None = None,
+) -> MemoryRecord:
+    return MemoryRecord(
+        record_id=str(uuid.uuid4()),
+        project_id="proj",
+        content=content,
+        original_token_count=20,
+        compressed_token_count=10,
+        tier=tier,
+        source_chunk_ids=["seed"],
+        embedding=embedding or _unit_vec(seed=5),
+        importance_score=0.7,
+        created_at=time.time(),
+        last_accessed_at=time.time(),
     )
 
 
@@ -122,6 +143,76 @@ async def test_compressor_writes_ltm_when_tier_is_ltm(stores):
     assert record is not None
     assert await ltm.count() == 1
     assert await wm.count() == 0
+
+
+@pytest.mark.asyncio
+async def test_compressor_updates_existing_wm_record_in_place(stores):
+    wm, ltm = stores
+    settings = Settings()
+
+    existing = _memory_record(tier=MemoryTier.WM, content="raw wm content")
+    await wm.write(existing)
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": "compressed wm update"}}]
+    }
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        compressor = Compressor(settings, wm, ltm)
+        job = _job(level=CompressionLevel.LIGHT, tier=MemoryTier.WM)
+        job.target_record_id = existing.record_id
+        await compressor.compress(job)
+
+    assert await wm.count() == 1
+    results = await wm.query(_unit_vec(), top_k=1)
+    assert results[0].record_id == existing.record_id
+    assert results[0].content == "compressed wm update"
+
+
+@pytest.mark.asyncio
+async def test_compressor_updates_existing_ltm_record_in_place(stores):
+    wm, ltm = stores
+    settings = Settings()
+
+    existing = _memory_record(
+        tier=MemoryTier.LTM,
+        content="raw ltm content",
+        embedding=_unit_vec(seed=9),
+    )
+    await ltm.write(existing)
+    original_index_size = ltm.faiss_index_size
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": "compressed ltm update"}}]
+    }
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        compressor = Compressor(settings, wm, ltm)
+        job = _job(level=CompressionLevel.HEAVY, tier=MemoryTier.LTM)
+        job.target_record_id = existing.record_id
+        await compressor.compress(job)
+
+    assert await ltm.count() == 1
+    assert ltm.faiss_index_size == original_index_size
+    results = await ltm.query(existing.embedding, top_k=1)
+    assert results[0].record_id == existing.record_id
+    assert results[0].content == "compressed ltm update"
 
 
 # ===== Compressor: fallback when LM Studio unreachable =====

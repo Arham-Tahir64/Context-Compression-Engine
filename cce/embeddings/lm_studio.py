@@ -50,3 +50,13 @@ class LMStudioEmbeddingProvider(EmbeddingProvider):
     async def embed_one(self, text: str) -> list[float]:
         results = await self.embed([text])
         return results[0]
+
+    async def check_ready(self) -> tuple[bool, str | None]:
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                response = await client.get(f"{self._base_url}/models")
+                if response.status_code == 200:
+                    return True, None
+                return False, f"LM Studio returned HTTP {response.status_code} for /models"
+        except Exception as exc:
+            return False, f"LM Studio embeddings are unavailable: {exc}"

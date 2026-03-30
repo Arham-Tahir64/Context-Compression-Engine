@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from cce.memory.ltm import LongTermMemory
 from cce.memory.stm import ShortTermMemory
 from cce.memory.wm import WorkingMemory
 from cce.models.types import MemoryRecord, MemoryTier, ScoredChunk
 from cce.settings import Settings
+from cce.storage.db import Database
 
 
 @dataclass
@@ -17,6 +18,7 @@ class RoutingResult:
     wm: int = 0
     ltm: int = 0
     discarded: int = 0
+    record_ids_by_chunk_id: dict[str, str] = field(default_factory=dict)
 
 
 class MemoryRouter:
@@ -35,6 +37,7 @@ class MemoryRouter:
         wm: WorkingMemory,
         ltm: LongTermMemory,
         settings: Settings,
+        db: Database | None = None,
     ):
         self._stm = stm
         self._wm = wm
@@ -42,6 +45,7 @@ class MemoryRouter:
         self._stm_threshold = settings.router_stm_threshold
         self._wm_threshold = settings.router_wm_threshold
         self._discard_threshold = settings.router_discard_threshold
+        self._db = db
 
     async def route(self, scored_chunks: list[ScoredChunk]) -> RoutingResult:
         """Route each chunk to the appropriate tier based on composite score."""
@@ -66,6 +70,9 @@ class MemoryRouter:
             elif tier == MemoryTier.LTM:
                 await self._ltm.write(record)
                 result.ltm += 1
+
+            await self._log_chunk(sc, tier)
+            result.record_ids_by_chunk_id[sc.chunk.chunk_id] = record.record_id
 
         return result
 
@@ -92,5 +99,20 @@ class MemoryRouter:
             importance_score=sc.composite_score,
             created_at=sc.chunk.created_at,
             last_accessed_at=now,
+            metadata=sc.chunk.metadata,
+        )
+
+    async def _log_chunk(self, sc: ScoredChunk, tier: MemoryTier) -> None:
+        if self._db is None:
+            return
+        await self._db.log_chunk(
+            chunk_id=sc.chunk.chunk_id,
+            project_id=sc.chunk.project_id,
+            content=sc.chunk.content,
+            content_type=sc.chunk.content_type.value,
+            token_count=sc.chunk.token_count,
+            turn_index=sc.chunk.turn_index,
+            created_at=sc.chunk.created_at,
+            tier_assigned=tier.value,
             metadata=sc.chunk.metadata,
         )

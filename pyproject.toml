@@ -27,6 +27,9 @@ dev = [
     "httpx>=0.27.0",
 ]
 
+[project.scripts]
+cce = "cce.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cce*"]

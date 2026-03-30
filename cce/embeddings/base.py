@@ -31,3 +31,8 @@ class EmbeddingProvider(ABC):
     def model_name(self) -> str:
         """Human-readable model identifier, stored in project metadata."""
         ...
+
+    @abstractmethod
+    async def check_ready(self) -> tuple[bool, str | None]:
+        """Return whether the provider is ready and an optional diagnostic."""
+        ...

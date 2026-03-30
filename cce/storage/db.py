@@ -59,6 +59,40 @@ class Database:
         cursor = await self._conn.execute(sql, params)
         return await cursor.fetchone()
 
+    async def log_chunk(
+        self,
+        *,
+        chunk_id: str,
+        project_id: str,
+        content: str,
+        content_type: str,
+        token_count: int,
+        turn_index: int,
+        created_at: float,
+        tier_assigned: str,
+        metadata: object,
+    ) -> None:
+        async with self.transaction():
+            await self.execute(
+                """
+                INSERT OR REPLACE INTO chunks (
+                    chunk_id, project_id, content, content_type, token_count,
+                    turn_index, created_at, tier_assigned, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    chunk_id,
+                    project_id,
+                    content,
+                    content_type,
+                    token_count,
+                    turn_index,
+                    created_at,
+                    tier_assigned,
+                    encode_json(metadata),
+                ),
+            )
+
 
 # --- Serialization helpers used by memory stores ---
 

@@ -87,6 +87,7 @@ class CompressionJob:
     chunks: list[Chunk]
     target_tier: MemoryTier
     compression_level: CompressionLevel
+    target_record_id: str | None = None
 
 
 @dataclass

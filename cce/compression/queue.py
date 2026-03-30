@@ -24,6 +24,7 @@ class CompressionQueue:
         self._compressor = compressor
         self._queue: asyncio.Queue[CompressionJob] = asyncio.Queue(maxsize=maxsize)
         self._running = False
+        self._stop_event = asyncio.Event()
 
     async def enqueue(self, job: CompressionJob) -> None:
         """Add a job. Drops silently if queue is full to protect latency."""
@@ -40,7 +41,7 @@ class CompressionQueue:
         """Background coroutine: process jobs one at a time until stopped."""
         self._running = True
         logger.info("Compression worker started")
-        while self._running:
+        while not self._stop_event.is_set():
             try:
                 job = await asyncio.wait_for(self._queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
@@ -51,11 +52,16 @@ class CompressionQueue:
                 logger.exception("Compression job %s failed", job.job_id)
             finally:
                 self._queue.task_done()
+        self._running = False
 
     async def stop(self) -> None:
         """Signal the worker to stop after finishing the current job."""
         self._running = False
+        self._stop_event.set()
 
     @property
     def qsize(self) -> int:
         return self._queue.qsize()
+
+    async def compressor_available(self) -> bool:
+        return await self._compressor.probe()
